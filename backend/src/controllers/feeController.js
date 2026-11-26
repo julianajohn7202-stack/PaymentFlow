@@ -2,9 +2,10 @@
 
 const mongoose = require('mongoose');
 const FeeStructure = require('../models/feeStructureModel');
-const { get, set, del, KEYS, TTL } = require('../cache');
+const { del, KEYS } = require('../cache');
 const { logAudit } = require('../services/auditService');
 const logger = require('../utils/logger');
+const { activeFeeFilter, feeScheduleFields } = require('../utils/feeSchedule');
 const { validateDecimalAmount, toDecimalString } = require('../utils/decimalPrecision');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -42,7 +43,8 @@ async function createFeeStructure(req, res, next) {
     const existing = await FeeStructure.findOne({ schoolId, className, isActive: true });
     if (existing) return next(Object.assign(new Error(`Active fee structure already exists for class ${className}`), { code: 'DUPLICATE_FEE_STRUCTURE', status: 409 }));
 
-    const fee = await FeeStructure.create({ schoolId, className, feeAmount: normalisedFeeAmount, description, academicYear: academicYear || new Date().getUTCFullYear().toString(), isActive: true, paymentDeadline: paymentDeadline || null });
+    const schedule = feeScheduleFields(req.body);
+    const fee = await FeeStructure.create({ schoolId, className, feeAmount: normalisedFeeAmount, description, academicYear: academicYear || new Date().getUTCFullYear().toString(), isActive: true, paymentDeadline: paymentDeadline || null, ...schedule });
     del(KEYS.feesAll(), KEYS.feeByClass(className));
     await audit(req, 'fee_create', className, { className, feeAmount: normalisedFeeAmount, academicYear });
     res.status(201).json(fee);
@@ -53,13 +55,18 @@ async function getAllFeeStructures(req, res, next) {
   try {
     const includeDeleted = req.query.includeDeleted === 'true';
     const isAdmin = Boolean(req.admin);
+    const preview = req.query.activeAt !== undefined;
+    const at = preview ? new Date(typeof req.query.activeAt === 'string' ? req.query.activeAt : NaN) : new Date();
+    if (!Number.isFinite(at.getTime())) {
+      return res.status(400).json({ code: 'VALIDATION_ERROR', error: 'activeAt must be a valid date' });
+    }
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
     const skip = (page - 1) * limit;
 
-    const filter = { schoolId: req.schoolId, ...(isAdmin ? {} : { isActive: true }), ...(includeDeleted ? {} : { deletedAt: null }) };
+    const filter = { schoolId: req.schoolId, ...(isAdmin && !preview ? {} : activeFeeFilter(at)), ...(includeDeleted && !preview ? {} : { deletedAt: null }) };
     const query = FeeStructure.find(filter);
-    if (includeDeleted) query.includeDeleted();
+    if (includeDeleted && !preview) query.includeDeleted();
 
     const [fees, total] = await Promise.all([
       query.sort({ className: 1 }).skip(skip).limit(limit).lean(),
@@ -83,12 +90,8 @@ async function getAllFeeStructures(req, res, next) {
 async function getFeeByClass(req, res, next) {
   try {
     const { className } = req.params;
-    const cached = get(KEYS.feeByClass(className));
-    if (cached !== undefined) return res.json(cached);
-
-    const fee = await FeeStructure.findOne({ schoolId: req.schoolId, className, deletedAt: null, isActive: true });
+    const fee = await FeeStructure.findOne({ schoolId: req.schoolId, className, deletedAt: null, ...activeFeeFilter() });
     if (!fee) return next(Object.assign(new Error(`No fee structure found for class ${className}`), { code: 'NOT_FOUND' }));
-    set(KEYS.feeByClass(className), fee, TTL.FEES);
     res.json(fee);
   } catch (err) { next(err); }
 }
@@ -129,8 +132,19 @@ async function updateFeeStructure(req, res, next) {
     if (academicYear   !== undefined) updateFields.academicYear   = academicYear;
     if (paymentDeadline !== undefined) updateFields.paymentDeadline = paymentDeadline;
 
-    const before = await FeeStructure.findOne({ schoolId: req.schoolId, className, isActive: true }).lean();
-    const fee = await FeeStructure.findOneAndUpdate({ schoolId: req.schoolId, className, isActive: true }, updateFields, { new: true, runValidators: true });
+    const scheduleEdit = ['isActive', 'activeFrom', 'activeTo'].some(field => req.body[field] !== undefined);
+    const filter = { schoolId: req.schoolId, className, ...(scheduleEdit ? {} : { isActive: true }) };
+    const before = await FeeStructure.findOne(filter).lean();
+    Object.assign(updateFields, feeScheduleFields(req.body, before || {}));
+    if (scheduleEdit && before) {
+      // Keep validation of a one-sided edit coupled to the window that was read.
+      filter.activeFrom = before.activeFrom ?? null;
+      filter.activeTo = before.activeTo ?? null;
+    }
+    const fee = await FeeStructure.findOneAndUpdate(filter, updateFields, { new: true, runValidators: true });
+    if (!fee && scheduleEdit && before) {
+      return next(Object.assign(new Error('The activation window changed. Reload and try again.'), { code: 'CONFLICT', status: 409 }));
+    }
     if (!fee) return next(Object.assign(new Error(`No active fee structure found for class ${className}`), { code: 'NOT_FOUND' }));
 
     del(KEYS.feesAll(), KEYS.feeByClass(className));

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   getFeeStructures,
   createFeeStructure,
+  updateFeeStructure,
   deleteFeeStructure,
   getStudents,
   getSchool,
@@ -22,11 +23,17 @@ const EMPTY_FORM = {
   feeAmount: "",
   academicYear: new Date().getUTCFullYear().toString(),
   description: "",
+  activeFrom: "",
+  activeTo: "",
+  isActive: true,
 };
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function FeesPage() {
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(null);
+  const [previewDate, setPreviewDate] = useState("");
   const [fees, setFees]             = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 1 });
   const [classOptions, setClassOptions] = useState(DEFAULT_CLASS_OPTIONS);
@@ -62,10 +69,10 @@ export default function FeesPage() {
     }
   }, [createSuccess]);
 
-  function loadFees(page = 1) {
+  function loadFees(page = 1, activeAt = previewDate) {
     setLoading(true);
     setError(null);
-    getFeeStructures({ signal, page, limit: pagination.limit })
+    getFeeStructures({ signal, page, limit: pagination.limit, manage: true, activeAt: activeAt || undefined })
       .then(({ data }) => {
         setFees(data.data || data);
         if (data.pagination) {
@@ -83,8 +90,8 @@ export default function FeesPage() {
   // ── Create form handlers ──────────────────────────────────────────────────
 
   function handleFormChange(e) {
-    const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+    const { name, value, checked, type } = e.target;
+    setForm((prev) => ({ ...prev, [name]: type === "checkbox" ? checked : value }));
     setCreateError(null);
   }
 
@@ -106,12 +113,17 @@ export default function FeesPage() {
     setCreating(true);
     try {
       const payload = {
-        className: form.className,
+        className: editing || form.className,
         feeAmount,
+        isActive: form.isActive,
+        activeFrom: form.activeFrom || null,
+        activeTo: form.activeTo || null,
         ...(form.academicYear && { academicYear: form.academicYear }),
         ...(form.description.trim() && { description: form.description.trim() }),
       };
-      await createFeeStructure(payload);
+      if (editing) await updateFeeStructure(editing, payload);
+      else await createFeeStructure(payload);
+      setEditing(null);
       setForm(EMPTY_FORM);
       setCreateSuccess(true);
       loadFees(1);
@@ -174,7 +186,7 @@ export default function FeesPage() {
               style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
             >
               <IconDollarSign size={16} />
-              {t("fees.createTitle")}
+              {editing ? "Edit fee" : t("fees.createTitle")}
             </div>
           </div>
           <div className="card-body">
@@ -292,6 +304,23 @@ export default function FeesPage() {
                 />
               </div>
 
+              <label>
+                Active from (UTC)
+                <input className="form-input" type="date" name="activeFrom" value={form.activeFrom} onChange={handleFormChange} />
+              </label>
+              <label>
+                Active until (UTC)
+                <input className="form-input" type="date" name="activeTo" value={form.activeTo} onChange={handleFormChange} />
+              </label>
+              <label>
+                <input type="checkbox" name="isActive" checked={form.isActive} onChange={handleFormChange} /> Enabled
+              </label>
+              {editing && (
+                <button className="btn btn-ghost" type="button" onClick={() => { setEditing(null); setForm(EMPTY_FORM); }}>
+                  Cancel edit
+                </button>
+              )}
+
               {/* Submit */}
               <div style={{ display: "flex", alignItems: "flex-end" }}>
                 <button
@@ -301,7 +330,7 @@ export default function FeesPage() {
                   style={{ width: "100%" }}
                   aria-busy={creating}
                 >
-                  {creating ? t("fees.creating") : t("fees.create")}
+                  {creating ? t("fees.creating") : editing ? "Save changes" : t("fees.create")}
                 </button>
               </div>
             </form>
@@ -321,6 +350,15 @@ export default function FeesPage() {
             <span>{deleteError}</span>
           </div>
         )}
+
+        <label>
+          Preview active fees on (UTC)
+          <input className="form-input" type="date" value={previewDate} onChange={(event) => {
+            const date = event.target.value;
+            setPreviewDate(date);
+            loadFees(1, date);
+          }} />
+        </label>
 
         {/* ── Fee table ────────────────────────────────────────────────────── */}
         <div className="card">
@@ -384,6 +422,20 @@ export default function FeesPage() {
                         {fee.description || "—"}
                       </td>
                       <td>
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => {
+                          setEditing(fee.className);
+                          setForm({
+                            className: fee.className,
+                            feeAmount: String(fee.feeAmount),
+                            description: fee.description || "",
+                            academicYear: fee.academicYear || "",
+                            activeFrom: fee.activeFrom?.slice(0, 10) || "",
+                            activeTo: fee.activeTo?.slice(0, 10) || "",
+                            isActive: fee.isActive !== false,
+                          });
+                        }}>
+                          Edit
+                        </button>
                         <button
                           onClick={() => handleDeleteClick(fee)}
                           className="btn btn-sm btn-ghost"

@@ -2,6 +2,7 @@
 
 const Student = require('../models/studentModel');
 const FeeStructure = require('../models/feeStructureModel');
+const { activeFeeFilter } = require('../utils/feeSchedule');
 const { get, set, del, KEYS, TTL } = require('../cache');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
@@ -73,7 +74,7 @@ async function registerStudent(req, res, next) {
 
     assignedFee = feeAmount;
     if (assignedFee == null && className) {
-      const feeStructure = await FeeStructure.findOne({ schoolId, className, isActive: true });
+      const feeStructure = await FeeStructure.findOne({ schoolId, className, ...activeFeeFilter() });
       if (feeStructure) {
         assignedFee = feeStructure.feeAmount;
         assignedDeadline = feeStructure.paymentDeadline || null;
@@ -431,7 +432,7 @@ async function updateStudent(req, res, next) {
       // When the class changes, sync feeAmount from the new class fee structure
       // unless the caller explicitly provides a feeAmount override.
       if (feeAmount === undefined) {
-        const feeStructure = await FeeStructure.findOne({ schoolId: req.schoolId, className, isActive: true });
+        const feeStructure = await FeeStructure.findOne({ schoolId: req.schoolId, className, ...activeFeeFilter() });
         if (!feeStructure) {
           const err = new Error(`No active fee structure found for class "${className}"`);
           err.code = 'NO_FEE_STRUCTURE';
@@ -733,7 +734,7 @@ async function bulkImportStudents(req, res, next) {
       const feeStructures = await FeeStructure.find({
         schoolId,
         className: { $in: uniqueClasses },
-        isActive: true,
+        ...activeFeeFilter(),
       }).lean();
       feeStructures.forEach(fs => {
         feeStructureMap[fs.className] = fs.feeAmount;

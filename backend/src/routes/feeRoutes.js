@@ -13,7 +13,7 @@ const { contractPaused } = require('../middleware/contractPaused');
 router.use(resolveSchool);
 
 const requireIncludeDeletedAccess = (req, res, next) => {
-  if (String(req.query.includeDeleted).toLowerCase() === 'true') {
+  if (String(req.query.includeDeleted).toLowerCase() === 'true' || req.query.manage === 'true' || req.query.activeAt !== undefined) {
     return requireAdminAuth(req, res, next);
   }
   return next();

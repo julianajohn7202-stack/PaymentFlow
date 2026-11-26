@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const csv = require('csv-parser');
 const Student = require('../models/studentModel');
 const FeeStructure = require('../models/feeStructureModel');
+const { activeFeeFilter } = require('../utils/feeSchedule');
 const School = require('../models/schoolModel');
 const ImportJob = require('../models/importJobModel');
 const { encryptStudentPii, hashParentEmail } = require('./studentPiiEncryption');
@@ -41,7 +42,7 @@ function validateRow(row) {
 async function recordBatch(jobId, schoolId, rows, school, quotaRemaining) {
   const classes = [...new Set(rows.map(({ data }) => data.class?.trim()).filter(Boolean))];
   const feeStructures = classes.length
-    ? await FeeStructure.find({ schoolId, className: { $in: classes }, isActive: true }).lean()
+    ? await FeeStructure.find({ schoolId, className: { $in: classes }, ...activeFeeFilter() }).lean()
     : [];
   const feeByClass = new Map(feeStructures.map((item) => [item.className, item.feeAmount]));
   const studentIds = [...new Set(rows.map(({ data }) => data.studentId?.trim()).filter(Boolean))];
